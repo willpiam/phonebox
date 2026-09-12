@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.tmp
+owned.json
+ownedPhoneNumbers.json
+ownedEmailAddresses.json
+contacts.json
+received.history.json
+sent.history.json
+received.email.history.json
+sent.email.history.json
