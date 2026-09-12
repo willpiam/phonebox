@@ -1,3 +1,5 @@
+![phonebox](assets/logo.jpg)
+
 # phonebox
 
 Local REST API for sending and reading SMS and email on owned accounts.
