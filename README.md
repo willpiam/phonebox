@@ -1,4 +1,4 @@
-![phonebox](assets/logo.jpg)
+![phonebox](assets/logo_small.jpg)
 
 # phonebox
 
