@@ -1,5 +1,5 @@
 
-![/assets/logo_small.jpg](logo)
+![logo](assets/logo_small.jpg)
 
 # phonebox
 
