@@ -39,8 +39,6 @@ hr { margin: 1.5rem 0; border: none; border-top: 1px solid #ccc; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
   gap: 0.75rem;
-  max-height: 70vh;
-  overflow: auto;
   padding: 0.25rem 0;
 }
 .gallery button.tile {
