@@ -46,6 +46,21 @@ Outbound AI calls use Twilio Media Streams, a local WebSocket bridge, a Cloudfla
 
 AI-initiated calls may be regulated (for example TCPA in the US). Only call numbers you are allowed to contact.
 
+### OpenAI API key
+
+1. Create an account at [platform.openai.com](https://platform.openai.com/).
+2. Open [API keys](https://platform.openai.com/api-keys) and create a secret key.
+3. Ensure the project has billing enabled and access to the Realtime API (used for live calls).
+4. With phonebox running, paste the key at [http://127.0.0.1:8765/gui/openai](http://127.0.0.1:8765/gui/openai). It is stored in gitignored `openai.json`.
+
+### Twilio phone number
+
+1. Create an account at [twilio.com](https://www.twilio.com/) and open the [Console](https://console.twilio.com/).
+2. Note your **Account SID** and **Auth Token** from the console dashboard.
+3. Buy a number under [Phone Numbers → Manage → Buy a number](https://console.twilio.com/us1/develop/phone-numbers/manage/search). Enable **Voice** (and **SMS** if you want texting).
+4. Open the number's detail page and copy its **Phone Number SID** (starts with `PN`).
+5. Add the number to `ownedPhoneNumbers.json` (see below), or use [http://127.0.0.1:8765/gui/phones](http://127.0.0.1:8765/gui/phones).
+
 ## ownedPhoneNumbers.json
 
 Create `ownedPhoneNumbers.json` in this directory before sending SMS or placing calls. It is gitignored because it holds Twilio secrets. (Legacy filename `owned.json` is still accepted if the new file is missing.)
