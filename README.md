@@ -2,7 +2,12 @@
 
 # phonebox
 
-Local REST API for sending and reading SMS and email on owned accounts, and placing outbound AI phone calls.
+A local REST API that lets agents on this machine:
+
+- make phone calls
+- send and receive SMS
+- send and receive email
+
 
 ## ownedPhoneNumbers.json
 
