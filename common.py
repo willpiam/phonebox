@@ -40,10 +40,39 @@ RECEIVED_PATH = HERE / "received.history.json"
 SENT_PATH = HERE / "sent.history.json"
 RECEIVED_EMAIL_PATH = HERE / "received.email.history.json"
 SENT_EMAIL_PATH = HERE / "sent.email.history.json"
+OPENAI_PATH = HERE / "openai.json"
+CALLS_PATH = HERE / "calls.history.json"
 TWILIO_API_ROOT = "https://api.twilio.com"
 TWILIO_MESSAGES = TWILIO_API_ROOT + "/2010-04-01/Accounts/{account_sid}/Messages.json"
+TWILIO_CALLS = TWILIO_API_ROOT + "/2010-04-01/Accounts/{account_sid}/Calls.json"
+TWILIO_CALL = TWILIO_API_ROOT + "/2010-04-01/Accounts/{account_sid}/Calls/{call_sid}.json"
 # Twilio Body parameter max for a single Messages API request (error 21617).
 SMS_BODY_MAX = 1600
+DEFAULT_REALTIME_MODEL = "gpt-realtime"
+DEFAULT_REALTIME_VOICE = "alloy"
+# Built-in Realtime voices (documented by OpenAI; no public list endpoint).
+REALTIME_VOICES = [
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+    "marin",
+    "cedar",
+]
+# Used when no API key is set yet, or Models API is unreachable.
+FALLBACK_REALTIME_MODELS = [
+    "gpt-realtime",
+    "gpt-realtime-1.5",
+    "gpt-realtime-2.1",
+]
+MEDIA_WS_HOST = "127.0.0.1"
+MEDIA_WS_PORT = 8766
+CONTEXT_FILE_MAX_BYTES = 32_000
+CONTEXT_TOTAL_MAX_CHARS = 48_000
 
 
 def sms_part_prefix(index: int, total: int) -> str:
@@ -392,17 +421,23 @@ def twilio_basic_auth(account_sid: str, auth_token: str) -> str:
     return f"Basic {token}"
 
 
-def twilio_request(owned: dict, url: str, data: bytes | None = None) -> dict:
+def twilio_request(
+    owned: dict,
+    url: str,
+    data: bytes | None = None,
+    method: str | None = None,
+) -> dict:
     account_sid = owned.get("account_sid")
     auth_token = owned.get("auth_token")
     if not account_sid or not auth_token:
         raise ValueError("ownedPhoneNumbers.json entry needs account_sid and auth_token")
     if url.startswith("/"):
         url = TWILIO_API_ROOT + url
+    http_method = method or ("POST" if data is not None else "GET")
     request = urllib.request.Request(
         url,
         data=data,
-        method="POST" if data is not None else "GET",
+        method=http_method,
         headers={
             "Authorization": twilio_basic_auth(account_sid, auth_token),
         },
@@ -411,10 +446,180 @@ def twilio_request(owned: dict, url: str, data: bytes | None = None) -> dict:
         request.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8")
+            if not body.strip():
+                return {}
+            return json.loads(body)
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Twilio HTTP {error.code}: {detail}") from error
+
+
+def openai_chat_completions(api_key: str, payload: dict, timeout: float = 60) -> dict:
+    raw = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=raw,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI HTTP {error.code}: {detail}") from error
+
+
+def openai_list_models(api_key: str, timeout: float = 30) -> list[dict]:
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/models",
+        method="GET",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI HTTP {error.code}: {detail}") from error
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def openai_realtime_model_ids(api_key: str | None = None) -> tuple[list[str], str | None]:
+    """Return realtime model ids for the GUI dropdown.
+
+    Prefers GET /v1/models filtered to ids containing 'realtime'. Falls back to a
+    curated list when no key is available or the Models API fails.
+    Returns (ids, warning_or_none).
+    """
+    warning: str | None = None
+    discovered: list[str] = []
+    key = (api_key or "").strip()
+    if not key:
+        try:
+            key = openai_api_key()
+        except ValueError:
+            key = ""
+    if key:
+        try:
+            for item in openai_list_models(key):
+                model_id = item.get("id")
+                if isinstance(model_id, str) and "realtime" in model_id.lower():
+                    # Skip realtime transcription / special session models.
+                    lowered = model_id.lower()
+                    if "transcri" in lowered or "translation" in lowered:
+                        continue
+                    discovered.append(model_id)
+        except Exception as error:
+            warning = f"Could not load models from OpenAI ({error}); showing fallback list."
+    ids = list(dict.fromkeys([*discovered, *FALLBACK_REALTIME_MODELS]))
+    ids.sort()
+    # Keep a stable preferred default near the top by reordering defaults first.
+    preferred = [m for m in FALLBACK_REALTIME_MODELS if m in ids]
+    rest = [m for m in ids if m not in preferred]
+    return preferred + rest, warning
+
+
+def mask_api_key(api_key: str) -> str:
+    key = (api_key or "").strip()
+    if not key:
+        return "(not set)"
+    if len(key) <= 12:
+        return "*" * len(key)
+    return f"{key[:7]}…{key[-4:]}"
+
+
+def load_openai_config() -> dict:
+    if not OPENAI_PATH.exists():
+        return {}
+    data = load_json(OPENAI_PATH)
+    if not isinstance(data, dict):
+        raise ValueError("openai.json must be a JSON object")
+    return data
+
+
+def save_openai_config(config: dict) -> None:
+    save_json(OPENAI_PATH, config)
+
+
+def openai_configured() -> bool:
+    key = load_openai_config().get("api_key")
+    return isinstance(key, str) and bool(key.strip())
+
+
+def openai_api_key() -> str:
+    key = load_openai_config().get("api_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError(
+            "OpenAI API key not configured; set it via /gui/openai or openai.json"
+        )
+    return key.strip()
+
+
+def openai_realtime_model() -> str:
+    model = load_openai_config().get("realtime_model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return DEFAULT_REALTIME_MODEL
+
+
+def openai_realtime_voice() -> str:
+    voice = load_openai_config().get("realtime_voice")
+    if isinstance(voice, str) and voice.strip():
+        return voice.strip()
+    return DEFAULT_REALTIME_VOICE
+
+
+def resolve_context_path(path_str: str) -> Path:
+    """Resolve a context file path; must stay under the phonebox project directory."""
+    if not isinstance(path_str, str) or not path_str.strip():
+        raise ValueError("context file path must be a non-empty string")
+    root = HERE.resolve()
+    path = Path(path_str.strip()).expanduser()
+    if path.is_absolute():
+        candidate = path.resolve()
+    else:
+        candidate = (root / path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as error:
+        raise ValueError(
+            f"context file path must be under the phonebox directory: {path_str!r}"
+        ) from error
+    if not candidate.is_file():
+        raise FileNotFoundError(f"context file not found: {path_str}")
+    return candidate
+
+
+def read_context_files(paths: list[str]) -> str:
+    """Read and concatenate context files with size caps."""
+    if not paths:
+        return ""
+    chunks: list[str] = []
+    total = 0
+    for path_str in paths:
+        path = resolve_context_path(path_str)
+        data = path.read_bytes()[:CONTEXT_FILE_MAX_BYTES]
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("utf-8", errors="replace")
+        piece = f"--- file: {path.relative_to(HERE.resolve())} ---\n{text.strip()}\n"
+        if total + len(piece) > CONTEXT_TOTAL_MAX_CHARS:
+            remaining = CONTEXT_TOTAL_MAX_CHARS - total
+            if remaining > 0:
+                chunks.append(piece[:remaining] + "\n...[truncated]...\n")
+            break
+        chunks.append(piece)
+        total += len(piece)
+    return "\n".join(chunks).strip()
 
 
 def parse_twilio_date(value: str | None) -> datetime:

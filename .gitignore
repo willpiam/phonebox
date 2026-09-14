@@ -1,11 +1,15 @@
 __pycache__/
 *.py[cod]
 *.tmp
+*.deb
 owned.json
 ownedPhoneNumbers.json
 ownedEmailAddresses.json
 contacts.json
+openai.json
+calls.history.json
 received.history.json
 sent.history.json
 received.email.history.json
 sent.email.history.json
+.cursor/

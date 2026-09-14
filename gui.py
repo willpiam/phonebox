@@ -20,9 +20,10 @@ h1, h2 { font-weight: normal; }
 fieldset { margin: 1rem 0; padding: 0.75rem 1rem 1rem; }
 legend { padding: 0 0.25rem; }
 label { display: block; margin: 0.4rem 0 0.15rem; }
-input[type=text], input[type=password], input[type=number], input[type=email], textarea {
+input[type=text], input[type=password], input[type=number], input[type=email], textarea, select {
   width: 100%; max-width: 36rem; box-sizing: border-box;
 }
+select { padding: 0.25rem; font: inherit; }
 textarea { min-height: 5rem; font: inherit; }
 .secret { display: flex; gap: 0.5rem; align-items: center; max-width: 36rem; }
 .secret input[type=password] { flex: 1; width: auto; max-width: none; }
@@ -208,6 +209,7 @@ def page(
   <a href="/gui/phones">Phones</a>
   <a href="/gui/emails">Emails</a>
   <a href="/gui/contacts">Contacts</a>
+  <a href="/gui/openai">OpenAI</a>
   <a href="/gui/gallery">Gallery</a>
   <a href="/gui/donate">Donate</a>
 </nav>
@@ -221,11 +223,12 @@ def page(
 
 def index_page(message: str | None = None, error: str | None = None) -> str:
     body = """
-<p>Edit owned Twilio numbers, email accounts, and contacts stored in local JSON files.</p>
+<p>Edit owned Twilio numbers, email accounts, contacts, and OpenAI settings stored in local JSON files.</p>
 <ul>
   <li><a href="/gui/phones">Owned phone numbers</a></li>
   <li><a href="/gui/emails">Owned email addresses</a></li>
   <li><a href="/gui/contacts">Contacts</a></li>
+  <li><a href="/gui/openai">OpenAI API key</a> (required for outbound phone calls)</li>
   <li><a href="/gui/gallery">Asset gallery</a></li>
   <li><a href="/gui/donate">Donate</a></li>
 </ul>
@@ -286,9 +289,10 @@ def _existing_controls() -> str:
 """
 
 
-def _wrap_existing(summary: str, body: str) -> str:
+def _wrap_existing(summary: str, body: str, *, open_by_default: bool = False) -> str:
+    open_attr = " open" if open_by_default else ""
     return f"""
-<details class="existing-item">
+<details class="existing-item"{open_attr}>
   <summary>{escape(summary)}</summary>
   <div class="existing-body">
   {body}
@@ -832,11 +836,159 @@ def parse_form_body(raw: bytes, content_type: str | None) -> dict[str, str]:
     return {key: (values[-1] if values else "") for key, values in parsed.items()}
 
 
+def _select_field(
+    *,
+    label: str,
+    name: str,
+    options: list[str],
+    selected: str,
+) -> str:
+    field_id = f"select-{name}"
+    values = list(options)
+    if selected and selected not in values:
+        values = [selected, *values]
+    option_html = []
+    for value in values:
+        is_selected = " selected" if value == selected else ""
+        option_html.append(
+            f'<option value="{escape(value)}"{is_selected}>{escape(value)}</option>'
+        )
+    return f"""
+<label for="{escape(field_id)}">{escape(label)}</label>
+<select id="{escape(field_id)}" name="{escape(name)}">
+{''.join(option_html)}
+</select>
+"""
+
+
+def openai_page(message: str | None = None, error: str | None = None) -> str:
+    config = common.load_openai_config()
+    configured = common.openai_configured()
+    current_key = str(config.get("api_key") or "")
+    model = str(config.get("realtime_model") or common.DEFAULT_REALTIME_MODEL)
+    voice = str(config.get("realtime_voice") or common.DEFAULT_REALTIME_VOICE)
+    models, model_warning = common.openai_realtime_model_ids(
+        current_key if configured else None
+    )
+    if model not in models:
+        models = [model, *models]
+    voices = list(common.REALTIME_VOICES)
+    if voice not in voices:
+        voices = [voice, *voices]
+
+    status = "configured" if configured else "not configured"
+    masked = common.mask_api_key(current_key) if configured else "(not set)"
+    warning_html = (
+        f'<p class="msg err">{escape(model_warning)}</p>\n' if model_warning else ""
+    )
+    models_note = (
+        "Model options are loaded from OpenAI <code>GET /v1/models</code> "
+        "(ids containing <code>realtime</code>), with a small fallback list."
+        if configured
+        else "Model options show the fallback list until an API key is saved; "
+        "after that, phonebox refreshes them from OpenAI."
+    )
+    existing_block = ""
+    if configured:
+        existing_body = f"""
+<form method="post" action="/gui/openai/save">
+  <fieldset>
+    <legend>Edit configuration</legend>
+    <p class="muted">Current API key: <code>{escape(masked)}</code>. Leave the key blank to keep it.</p>
+    {_secret_field(label="api_key (optional replacement)", name="api_key", value="", required=False)}
+    {_select_field(label="realtime_model", name="realtime_model", options=models, selected=model)}
+    {_select_field(label="realtime_voice", name="realtime_voice", options=voices, selected=voice)}
+    <div class="actions">
+      <button type="submit">Save changes</button>
+    </div>
+  </fieldset>
+</form>
+<form method="post" action="/gui/openai/clear" class="row" onsubmit="return confirm('Clear the OpenAI API key?');">
+  <button type="submit">Clear API key</button>
+</form>
+"""
+        existing_block = (
+            "<h2>Existing</h2>"
+            + _existing_controls()
+            + '<div class="existing-list">'
+            + _wrap_existing(
+                f"OpenAI — {masked} · {model} · {voice}",
+                existing_body,
+                open_by_default=True,
+            )
+            + "</div>"
+        )
+        setup_block = ""
+    else:
+        setup_block = f"""
+<h2>Add configuration</h2>
+<form method="post" action="/gui/openai/save">
+  <fieldset>
+    <legend>OpenAI</legend>
+    {_secret_field(label="api_key", name="api_key", value="", required=True)}
+    {_select_field(label="realtime_model", name="realtime_model", options=models, selected=model)}
+    {_select_field(label="realtime_voice", name="realtime_voice", options=voices, selected=voice)}
+    <div class="actions">
+      <button type="submit">Save</button>
+    </div>
+  </fieldset>
+</form>
+"""
+
+    body = f"""
+<p>Outbound phone calls use the OpenAI Realtime API. Settings are stored in <code>openai.json</code> (gitignored).</p>
+<p class="muted">Status: <strong>{escape(status)}</strong>. Current key: <code>{escape(masked)}</code>.</p>
+{warning_html}
+<p class="muted">{models_note} Voice options are OpenAI's documented built-in Realtime voices (there is no voices list API).</p>
+{setup_block}
+{existing_block}
+<p class="muted">Phone calls also need <code>cloudflared</code> on PATH and a Voice-capable Twilio number.</p>
+"""
+    return page("OpenAI", body, message=message, error=error)
+
+
+def save_openai_from_form(form: dict[str, str]) -> str:
+    existing = common.load_openai_config()
+    api_key = _form_value(form, "api_key")
+    if not api_key:
+        api_key = str(existing.get("api_key") or "")
+    model = _form_value(form, "realtime_model") or common.DEFAULT_REALTIME_MODEL
+    voice = _form_value(form, "realtime_voice") or common.DEFAULT_REALTIME_VOICE
+    if not api_key.strip():
+        raise ValueError(
+            "api_key is required (or keep the existing key by leaving the field blank after configuring once)"
+        )
+    if voice not in common.REALTIME_VOICES and voice != str(
+        existing.get("realtime_voice") or ""
+    ).strip():
+        raise ValueError(
+            f"realtime_voice must be one of: {', '.join(common.REALTIME_VOICES)}"
+        )
+    common.save_openai_config(
+        {
+            "api_key": api_key.strip(),
+            "realtime_model": model.strip(),
+            "realtime_voice": voice.strip(),
+        }
+    )
+    return "saved OpenAI settings"
+
+
+def clear_openai_from_form(form: dict[str, str]) -> str:
+    existing = common.load_openai_config()
+    existing.pop("api_key", None)
+    if existing:
+        common.save_openai_config(existing)
+    elif common.OPENAI_PATH.exists():
+        common.OPENAI_PATH.unlink()
+    return "cleared OpenAI API key"
+
 ROUTES_GET = {
     "/gui": index_page,
     "/gui/phones": phones_page,
     "/gui/emails": emails_page,
     "/gui/contacts": contacts_page,
+    "/gui/openai": openai_page,
     "/gui/gallery": gallery_page,
     "/gui/donate": donate_page,
 }
@@ -848,4 +1000,6 @@ ROUTES_POST = {
     "/gui/emails/delete": ("/gui/emails", delete_email_from_form),
     "/gui/contacts/save": ("/gui/contacts", save_contact_from_form),
     "/gui/contacts/delete": ("/gui/contacts", delete_contact_from_form),
+    "/gui/openai/save": ("/gui/openai", save_openai_from_form),
+    "/gui/openai/clear": ("/gui/openai", clear_openai_from_form),
 }

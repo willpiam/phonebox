@@ -3,14 +3,19 @@
 
 GET  /                          JSON API index
 GET  /explain                   Plain-text briefing for another AI
-GET  /gui                       Minimal HTML config UI (phones, emails, contacts)
+GET  /gui                       Minimal HTML config UI (phones, emails, contacts, OpenAI)
 GET  /numbers                   Owned phone numbers (no secrets)
 GET  /addresses                 Owned email addresses (no secrets)
 GET  /contacts                  Contacts from contacts.json
+GET  /openai                    Whether an OpenAI API key is configured (no secret)
 POST /contact/add               Add a contact. JSON: {"name", "phone"?, "email"?, "notes"?} (phone or email required)
 POST /send/text                 Send SMS. JSON: {"from", "to", "body"}
 POST /send/email                Send email. JSON: {"from", "to", "subject", "body", ...}
 POST /email/read                Mark email(s) read on IMAP. JSON: {"address", ...}
+POST /call                      Place outbound AI phone call (async). Returns call id.
+GET  /call/<id>                 Call status, transcript, and answers
+GET  /calls                     Recent outbound calls
+POST /call/<id>/hangup          End an in-progress call
 GET  /received/<phone>          Inbound SMS for an owned number
 GET  /received/<phone>/since/<time>
 GET  /received/email/<address>  Inbound email for an owned address
@@ -30,6 +35,8 @@ import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import call_media
+import calls
 import common
 import gui
 
@@ -614,7 +621,7 @@ def explain_text(host: str, port: int) -> str:
     return f"""You have a local messaging tool called phonebox.
 
 What it is
-Phonebox is a localhost REST API for sending and reading real SMS (Twilio) and real email (IMAP/SMTP) on owned accounts. Any program or AI on this machine can call it. It is not a simulator: POST /send/text and POST /send/email send live messages.
+Phonebox is a localhost REST API for sending and reading real SMS (Twilio) and real email (IMAP/SMTP) on owned accounts, and for placing outbound AI phone calls (Twilio Voice + OpenAI Realtime). Any program or AI on this machine can call it. It is not a simulator: POST /send/text and POST /send/email send live messages; POST /call places a live phone call.
 
 Base URL
 {base}
@@ -622,11 +629,11 @@ Bound to localhost only. Do not assume it is reachable from the internet.
 
 Human config UI
 GET {base}/gui
-Minimal HTML pages to add/edit/delete owned phones, owned emails, and contacts. Prefer this for humans; prefer the JSON API below for programs and AIs.
+Minimal HTML pages to add/edit/delete owned phones, owned emails, contacts, and the OpenAI API key. Prefer this for humans; prefer the JSON API below for programs and AIs.
 
 Owned phone numbers
 GET {base}/numbers
-Use one of these as "from" when sending SMS, and as <phone> when reading the SMS inbox. Current owned numbers:
+Use one of these as "from" when sending SMS or placing calls, and as <phone> when reading the SMS inbox. Current owned numbers:
 
 {number_block}
 
@@ -636,9 +643,13 @@ Use one of these as "from" when sending email, and as <address> when reading an 
 
 {address_block}
 
+OpenAI (required for phone calls)
+GET {base}/openai
+Returns {{"configured": true/false, "realtime_model": "..."}}. Never returns the API key. Configure the key at GET {base}/gui/openai (writes gitignored openai.json).
+
 Contacts
 GET {base}/contacts
-Returns saved people (name, optional phone/e164, optional email, optional notes). Each contact has at least a phone or an email. Use a contact's phone as "to" when sending SMS. Use a contact's email address as "to" when sending email — do not pass the contact name to /send/email.
+Returns saved people (name, optional phone/e164, optional email, optional notes). Each contact has at least a phone or an email. Use a contact's phone as "to" when sending SMS or placing a call. Use a contact's email address as "to" when sending email — do not pass the contact name to /send/email.
 
 POST {base}/contact/add
 Content-Type: application/json
@@ -669,6 +680,37 @@ Rules:
 - Bodies longer than Twilio's 1600-character limit are split into multiple SMS on word boundaries (whitespace), each prefixed "(1/n)", "(2/n)", … so the reader can reorder if parts arrive out of sequence. A single word longer than the per-part budget is hard-split. Parts are sent back-to-back; SMS does not guarantee delivery order.
 - Success is HTTP 201 with the stored sent record (includes provider_sid, status, created_at_unix). If the body was split, the response is {{"count": N, "messages": [record, ...]}} instead of a single record.
 - Failures are JSON {{"error": "..."}} with 400 for bad input or 500 if Twilio rejects the send.
+
+Place outbound phone call (async)
+POST {base}/call
+Content-Type: application/json
+
+{{
+  "from": "{example_from}",
+  "to": "+15195551212",
+  "context": {{
+    "files": ["notes/example.txt"],
+    "background": "Why you are calling and what the callee should know.",
+    "additional": "Optional extra free text."
+  }},
+  "questions": [
+    "What is their preferred callback time?",
+    "Did they confirm the appointment?"
+  ]
+}}
+
+Rules:
+- Outbound only for now (no inbound human→agent calls).
+- "from" must be a Voice-capable owned Twilio number. "to" is the callee.
+- "context.files" are paths under the phonebox project directory (path escape outside the project is rejected).
+- Returns HTTP 202 immediately with a call record including "id" and status "queued".
+- Poll GET {base}/call/<id> until status is completed, failed, or canceled.
+- Statuses: queued → tunneling → dialing → in_progress → completed | failed | canceled.
+- On completion, "transcript" holds turn text and "answers" maps each question to an extracted answer.
+- POST {base}/call/<id>/hangup ends an in-progress call.
+- GET {base}/calls lists recent calls (newest first).
+- Requires: OpenAI key configured, cloudflared on PATH, Voice enabled on the Twilio number.
+- phonebox starts a Cloudflare Quick Tunnel for the call media WebSocket; you do not host a public server.
 
 Send email
 POST {base}/send/email
@@ -720,33 +762,35 @@ Content-Type: application/json
 
 {{
   "address": "{example_email}",
-  "message_ids": ["<abc@example.com>"],
-  "uids": ["123"]
+  "message_ids": ["<abc@example.com>"]
 }}
 
-Rules:
-- "address" must be owned.
-- Provide message_ids and/or provider_sids and/or uids (string or array). Message-ID is preferred; IMAP UID is the fallback.
-- This sets IMAP \\Seen on the server, so the mail also appears read in other email clients, and updates local history read=true.
-- Fetch uses BODY.PEEK so polling alone does not mark messages read.
+Also accepts "uids" (IMAP UIDs as strings). At least one of message_ids or uids is required.
 
-Response shape for /received/email:
+Example mark-read response
+{{
+  "address": "{example_email}",
+  "marked": 1,
+  "message_ids": ["<abc@example.com>"]
+}}
+
+Example inbound email list response (shape)
 {{
   "address": "{example_email}",
   "count": 1,
-  "unread_only": true,
+  "unread_only": false,
   "messages": [
     {{
       "kind": "email",
       "direction": "inbound",
-      "from": "someone@example.com",
-      "to": "{example_email}",
+      "from": "sender@example.com",
+      "to": ["{example_email}"],
       "subject": "hello",
       "body": "plain text body",
-      "read": false,
-      "imap_uid": "42",
+      "has_html": false,
       "message_id": "<abc@example.com>",
-      "provider_sid": "<abc@example.com>",
+      "imap_uid": "42",
+      "read": false,
       "created_at_unix": 1788979464,
       "created_at_iso": "2026-09-09T14:44:24-04:00"
     }}
@@ -758,7 +802,8 @@ Plain text is in "body". Large HTML is omitted; if HTML exists alongside plain t
 History files (for humans; prefer the API)
 - sent.history.json / received.history.json — SMS
 - sent.email.history.json / received.email.history.json — email
-Do not read auth tokens or passwords from ownedPhoneNumbers.json or ownedEmailAddresses.json. The API never returns credentials.
+- calls.history.json — outbound phone calls
+Do not read auth tokens or passwords from ownedPhoneNumbers.json, ownedEmailAddresses.json, or openai.json. The API never returns credentials.
 
 Typical AI workflow (SMS)
 1. GET /numbers and pick an owned "from" number.
@@ -774,9 +819,17 @@ Typical AI workflow (email)
 4. POST /email/read with the message_ids (or uids) you handled.
 5. POST /send/email with real recipient addresses when a reply is needed.
 
+Typical AI workflow (phone call)
+1. GET /openai and confirm configured=true (else tell the human to open /gui/openai).
+2. GET /numbers and pick a Voice-capable owned "from" number.
+3. POST /call with from, to, context, and questions.
+4. Poll GET /call/<id> until status is completed, failed, or canceled.
+5. Read answers and transcript from the final record.
+
 Examples (curl)
 curl -s {base}/numbers
 curl -s {base}/addresses
+curl -s {base}/openai
 curl -s {base}/contacts
 curl -s -X POST {base}/contact/add -H 'Content-Type: application/json' \\
   -d '{{"name":"Ada Lovelace","phone":"519 555 1212","email":"ada@example.com"}}'
@@ -784,15 +837,19 @@ curl -s -X POST {base}/send/text -H 'Content-Type: application/json' \\
   -d '{{"from":"{example_from}","to":"+15195551212","body":"hello"}}'
 curl -s -X POST {base}/send/email -H 'Content-Type: application/json' \\
   -d '{{"from":"{example_email}","to":["recipient@example.com"],"subject":"hello","body":"hi"}}'
+curl -s -X POST {base}/call -H 'Content-Type: application/json' \\
+  -d '{{"from":"{example_from}","to":"+15195551212","context":{{"background":"Confirm appointment"}},"questions":["Are they available Friday?"]}}'
+curl -s {base}/call/CALL_ID
+curl -s {base}/calls
 curl -s {base}/received/{example_from}
 curl -s '{base}/received/email/{example_email}?unread=1'
 curl -s -X POST {base}/email/read -H 'Content-Type: application/json' \\
   -d '{{"address":"{example_email}","message_ids":["<abc@example.com>"]}}'
 
 Constraints
-- Only send SMS from numbers returned by /numbers.
+- Only send SMS or place calls from numbers returned by /numbers.
 - Only send email from addresses returned by /addresses.
-- This sends real SMS and email. Do not spam. Confirm recipients before sending.
+- This sends real SMS, email, and phone calls. Do not spam. Confirm recipients before contacting them. AI phone calls may be regulated (e.g. TCPA); obtain consent where required.
 - Phone numbers in URLs may include +. Prefer the E.164 form (+1...) or digits-only.
 - After handling an email, mark it read so other agents skip it.
 """
@@ -811,7 +868,12 @@ def api_index() -> dict:
             {
                 "method": "GET",
                 "path": "/gui",
-                "description": "Minimal HTML UI to edit owned phones, emails, and contacts",
+                "description": "Minimal HTML UI to edit owned phones, emails, contacts, and OpenAI key",
+            },
+            {
+                "method": "GET",
+                "path": "/openai",
+                "description": "Whether an OpenAI API key is configured (never returns the key)",
             },
             {
                 "method": "GET",
@@ -885,6 +947,36 @@ def api_index() -> dict:
                 "method": "GET",
                 "path": "/received/email/<address>/since/<time>",
                 "description": "Inbound email after a cutoff; optional ?unread=1",
+            },
+            {
+                "method": "POST",
+                "path": "/call",
+                "description": "Place an outbound AI phone call (async; poll GET /call/<id>)",
+                "body": {
+                    "from": "owned number",
+                    "to": "recipient number",
+                    "context": {
+                        "files": ["path/under/phonebox"],
+                        "background": "free text",
+                        "additional": "free text",
+                    },
+                    "questions": ["what to learn on the call"],
+                },
+            },
+            {
+                "method": "GET",
+                "path": "/call/<id>",
+                "description": "Call status, transcript, and extracted answers",
+            },
+            {
+                "method": "GET",
+                "path": "/calls",
+                "description": "Recent outbound calls (newest first)",
+            },
+            {
+                "method": "POST",
+                "path": "/call/<id>/hangup",
+                "description": "Hang up an in-progress outbound call",
             },
         ],
     }
@@ -971,6 +1063,22 @@ class Handler(BaseHTTPRequestHandler):
                 contacts = [public_contact(entry) for entry in load_contacts()]
                 self._json(200, {"contacts": contacts})
                 return
+            if path == "/openai":
+                self._json(
+                    200,
+                    {
+                        "configured": common.openai_configured(),
+                        "realtime_model": common.openai_realtime_model(),
+                    },
+                )
+                return
+            if path == "/calls":
+                items = calls.list_calls()
+                self._json(200, {"calls": items, "count": len(items)})
+                return
+            if path == "/call" or path.startswith("/call/"):
+                self._handle_call_get(path)
+                return
             if path == "/received" or path.startswith("/received/"):
                 self._handle_received(path, parsed.query)
                 return
@@ -980,6 +1088,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             self._error(500, "internal error")
+
+    def _handle_call_get(self, path: str) -> None:
+        if path == "/call":
+            self._error(400, "call id required: GET /call/<id> (or use GET /calls)")
+            return
+        call_id = path[len("/call/") :].strip("/")
+        if not call_id or "/" in call_id:
+            self._error(400, "call id required: GET /call/<id>")
+            return
+        record = calls.get_call(call_id)
+        if record is None:
+            self._error(404, f"unknown call id: {call_id}")
+            return
+        self._json(200, record)
 
     def _handle_gui_get(self, path: str, query: str) -> None:
         params = urllib.parse.parse_qs(query, keep_blank_values=True)
@@ -1064,6 +1186,21 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 record = send_email(payload)
                 self._json(201, record)
+                return
+            if path == "/call":
+                payload = self._read_json_object()
+                if payload is None:
+                    return
+                record = calls.create_call_record(payload)
+                self._json(202, record)
+                return
+            if path.startswith("/call/") and path.endswith("/hangup"):
+                call_id = path[len("/call/") : -len("/hangup")].strip("/")
+                if not call_id or "/" in call_id:
+                    self._error(400, "call id required: POST /call/<id>/hangup")
+                    return
+                record = calls.hangup_call(call_id)
+                self._json(200, record)
                 return
             if path == "/send":
                 self._error(
@@ -1161,7 +1298,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Local SMS and email REST API for owned Twilio numbers and mailboxes"
+        description="Local SMS, email, and outbound AI phone-call REST API"
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="bind port (default: 8765)")
@@ -1179,6 +1316,7 @@ def main() -> int:
         common.RECEIVED_EMAIL_PATH,
         common.SENT_EMAIL_PATH,
         common.CONTACTS_PATH,
+        common.CALLS_PATH,
     ):
         if not path.exists():
             common.save_json(path, [])
@@ -1201,6 +1339,10 @@ def main() -> int:
         print("\nstopping", flush=True)
     finally:
         stop.set()
+        try:
+            call_media.stop_media_server()
+        except Exception:
+            pass
         _http_server = None
         _stop_event = None
         server.server_close()
