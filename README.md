@@ -1,4 +1,5 @@
-phonebox
+
+![/assets/logo_small.jpg](logo)
 
 # phonebox
 
