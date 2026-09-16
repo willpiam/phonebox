@@ -1,15 +1,46 @@
-
 ![logo](assets/logo_small.jpg)
 
 # phonebox
 
-A local REST API that lets agents on this machine:
+A local tool that lets agents on this machine:
 
 - make phone calls
 - send and receive SMS
 - send and receive email
 
-## Start
+Two interfaces share the same actions:
+
+- **CLI** (`python3 cli.py …`) — one-shot commands; no always-on process. Preferred for agents.
+- **REST** (`python3 server.py`) — localhost HTTP API plus HTML config UI and background inbox polling.
+
+## CLI (no background server)
+
+```bash
+pip install -r requirements.txt
+python3 cli.py explain
+python3 cli.py numbers
+python3 cli.py send text --from '+1XXXXXXXXXX' --to '+1YYYYYYYYYY' --body 'hello'
+python3 cli.py received sms +1XXXXXXXXXX
+python3 cli.py call --from '+1XXXXXXXXXX' --to '+1YYYYYYYYYY' \
+  --background 'Confirm appointment' --question 'Are they available Friday?'
+```
+
+Commands print JSON on stdout (errors on stderr). Outbound calls **block** until the call finishes, then print the final record (status, transcript, answers). Ctrl+C hangs up.
+
+| Command | Purpose |
+|---------|---------|
+| `explain` | Agent briefing |
+| `numbers` / `addresses` / `contacts` / `openai` | List config (no secrets) |
+| `contact add --name …` | Add/update a contact |
+| `send text --from … --to … --body …` | SMS |
+| `send email --from … --to … --subject … --body …` | Email |
+| `received sms <phone> [--since …]` | SMS inbox (polls Twilio first) |
+| `received email <address> [--since …] [--unread]` | Email inbox (polls IMAP first) |
+| `email read --address … --message-id …` | Mark email(s) read |
+| `call --from … --to … [--background …] [--question …] [--file …]` | Place call (blocking) |
+| `call status <id>` / `call hangup <id>` / `calls` | Inspect or end calls |
+
+## REST server
 
 ```bash
 pip install -r requirements.txt
@@ -39,10 +70,10 @@ Outbound AI calls use Twilio Media Streams, a local WebSocket bridge, a Cloudfla
 
 1. `pip install -r requirements.txt`
 2. Install `[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/)` so it is on your `PATH` (Quick Tunnels need no Cloudflare account).
-3. Set an OpenAI API key at `http://127.0.0.1:8765/gui/openai` (writes gitignored `openai.json`).
+3. Set an OpenAI API key at `http://127.0.0.1:8765/gui/openai` while the REST server is running (writes gitignored `openai.json`), or create `openai.json` yourself with `{"api_key":"sk-..."}`.
 4. Ensure the owned Twilio number can place Voice calls.
 
-`POST /call` returns immediately with a call id; poll `GET /call/<id>` for status, transcript, and answers. Inbound human→agent calls are not supported yet.
+Via CLI, `python3 cli.py call …` blocks until the call completes. Via REST, `POST /call` returns immediately with a call id; poll `GET /call/<id>` for status, transcript, and answers. Inbound human→agent calls are not supported yet.
 
 AI-initiated calls may be regulated (for example TCPA in the US). Only call numbers you are allowed to contact.
 
@@ -51,7 +82,7 @@ AI-initiated calls may be regulated (for example TCPA in the US). Only call numb
 1. Create an account at [platform.openai.com](https://platform.openai.com/).
 2. Open [API keys](https://platform.openai.com/api-keys) and create a secret key.
 3. Ensure the project has billing enabled and access to the Realtime API (used for live calls).
-4. With phonebox running, paste the key at [http://127.0.0.1:8765/gui/openai](http://127.0.0.1:8765/gui/openai). It is stored in gitignored `openai.json`.
+4. Paste the key at [http://127.0.0.1:8765/gui/openai](http://127.0.0.1:8765/gui/openai) (start `python3 server.py` first), or write gitignored `openai.json` with `{"api_key":"sk-..."}`.
 
 ### Twilio phone number
 

@@ -170,12 +170,15 @@ def create_call_record(payload: dict) -> dict:
     return record
 
 
+TERMINAL_CALL_STATUSES = frozenset({"completed", "failed", "canceled"})
+
+
 def hangup_call(call_id: str) -> dict:
     record = get_call(call_id)
     if record is None:
         raise ValueError(f"unknown call id: {call_id}")
     status = str(record.get("status") or "")
-    if status in {"completed", "failed", "canceled"}:
+    if status in TERMINAL_CALL_STATUSES:
         return record
 
     session = call_media.get_session(call_id)
@@ -201,6 +204,26 @@ def hangup_call(call_id: str) -> dict:
             print(f"hangup Twilio update failed for {call_id}: {error}", flush=True)
 
     return update_call(call_id, status="canceled")
+
+
+def wait_for_call(
+    call_id: str,
+    *,
+    timeout: float | None = None,
+    poll_interval: float = 1.0,
+) -> dict:
+    """Block until the call reaches a terminal status. Raises TimeoutError if timeout elapses."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        record = get_call(call_id)
+        if record is None:
+            raise ValueError(f"unknown call id: {call_id}")
+        status = str(record.get("status") or "")
+        if status in TERMINAL_CALL_STATUSES:
+            return record
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(f"timed out waiting for call {call_id} (last status={status})")
+        time.sleep(poll_interval)
 
 
 def _run_call_worker(

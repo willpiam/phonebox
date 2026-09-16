@@ -209,7 +209,7 @@ def page(
   <a href="/gui/contacts">Contacts</a>
   <a href="/gui/openai">OpenAI</a>
   <a href="/gui/gallery">Gallery</a>
-  <a href="/gui/support">Support my work</a>
+  <a href="/gui/about">About</a>
 </nav>
 <hr>
 {notice}<h1>{escape(title)}</h1>
@@ -228,7 +228,7 @@ def index_page(message: str | None = None, error: str | None = None) -> str:
   <li><a href="/gui/contacts">Contacts</a></li>
   <li><a href="/gui/openai">OpenAI API key</a> (required for outbound phone calls)</li>
   <li><a href="/gui/gallery">Asset gallery</a></li>
-  <li><a href="/gui/support">Support my work</a></li>
+  <li><a href="/gui/about">About</a></li>
 </ul>
 <p class="muted">Forms POST to /gui/... endpoints on this server. Secrets stay in gitignored files.</p>
 <hr>
@@ -251,14 +251,19 @@ def shutdown_page() -> str:
     )
 
 
-def support_page(message: str | None = None, error: str | None = None) -> str:
+def about_page(message: str | None = None, error: str | None = None) -> str:
+    github_url = "https://github.com/willpiam/phonebox"
     ens_url = "https://app.ens.domains/williamdoyle.eth"
+    other_work_url = "https://projects.williamdoyle.ca"
     body = f"""
-<p>If phonebox is useful, you can support my work by sending crypto to the ENS name <strong>williamdoyle.eth</strong>.</p>
-<p><a href="{escape(ens_url)}" target="_blank" rel="noopener noreferrer">williamdoyle.eth</a></p>
-<p class="muted">Opens the ENS app profile for williamdoyle.eth, where you can send crypto or view payment details.</p>
+<p>phonebox is a local tool for managing Twilio numbers, email, contacts, and outbound calls.</p>
+<ul>
+  <li><a href="{escape(github_url)}" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+  <li><a href="{escape(ens_url)}" target="_blank" rel="noopener noreferrer">Support my work</a> — send crypto via <strong>williamdoyle.eth</strong></li>
+  <li><a href="{escape(other_work_url)}" target="_blank" rel="noopener noreferrer">My other work</a></li>
+</ul>
 """
-    return page("Support my work", body, message=message, error=error)
+    return page("About", body, message=message, error=error)
 
 
 def _form_value(form: dict[str, str], key: str, default: str = "") -> str:
@@ -988,7 +993,7 @@ ROUTES_GET = {
     "/gui/contacts": contacts_page,
     "/gui/openai": openai_page,
     "/gui/gallery": gallery_page,
-    "/gui/support": support_page,
+    "/gui/about": about_page,
 }
 
 ROUTES_POST = {
