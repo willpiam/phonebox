@@ -8,6 +8,16 @@ A local tool that lets agents on this machine:
 - send and receive SMS
 - send and receive email
 
+## Use phonebox from any repository
+
+The CLI lives in this checkout. Agents working in other projects on the same machine will not find it unless you install a personal Cursor skill that points at this path.
+
+See [global-skill.md](global-skill.md). In Cursor, with this repo open, tell the agent:
+
+> Read global-skill.md and use it to set up a global skill so that all repos on this machine can use phonebox.
+
+That writes `~/.cursor/skills/phonebox/SKILL.md` on this machine. It is not committed, and it is not limited to this repository.
+
 Two interfaces share the same actions:
 
 - **CLI** (`python3 cli.py …`) — one-shot commands; no always-on process. Preferred for agents.
