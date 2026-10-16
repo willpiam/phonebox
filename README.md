@@ -155,3 +155,10 @@ Password rules:
 - If top-level `password` is set, it is used for IMAP and SMTP.
 - If top-level `password` is omitted, both `imap.password` and `smtp.password` must be set.
 - Protocol-specific passwords override the top-level password when present.
+
+Sent mail:
+
+- After SMTP accepts a message, phonebox APPENDs the same copy to the account's IMAP Sent mailbox (flagged `\Seen`) so other clients can see it.
+- The mailbox is the one with the SPECIAL-USE `\Sent` attribute, otherwise the first match among `Sent`, `INBOX.Sent`, `Sent Items`, `Sent Messages`, and `[Gmail]/Sent Mail`.
+- Set `imap.sent_mailbox` to a mailbox name when auto-detection does not match the server.
+- If APPEND fails after SMTP has already delivered, the send returns an error and the message is not written to local sent history.

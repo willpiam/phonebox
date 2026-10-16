@@ -387,6 +387,9 @@ def send_email(payload: dict) -> dict:
     owned = common.resolve_owned_email(common.load_owned_emails(), from_value)
     message, recipients, meta = common.build_outbound_email(owned, payload)
     common.send_smtp_message(owned, message, recipients)
+    # SMTP has already delivered. If APPEND fails, raise before local history
+    # so the caller sees that Sent sync did not succeed.
+    mailbox = common.imap_append_sent(owned, message)
     now = datetime.now().astimezone()
     record = {
         "kind": "email",
@@ -402,6 +405,7 @@ def send_email(payload: dict) -> dict:
         "provider": "smtp",
         "provider_sid": meta["message_id"],
         "message_id": meta["message_id"],
+        "mailbox": mailbox,
         "created_at_unix": int(time.time()),
         "created_at_iso": now.isoformat(),
     }

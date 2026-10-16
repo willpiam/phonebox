@@ -915,6 +915,106 @@ def fetch_imap_messages(
             pass
 
 
+_SENT_MAILBOX_CANDIDATES = (
+    "Sent",
+    "INBOX.Sent",
+    "Sent Items",
+    "Sent Messages",
+    "[Gmail]/Sent Mail",
+)
+
+_IMAP_LIST_RE = re.compile(
+    r'^\(([^)]*)\)\s+'
+    r'(?:"(?:\\.|[^"\\])*"|NIL|\S+)\s+'
+    r'("(?:\\.|[^"\\])*"|\{.*\}|\S+)\s*$'
+)
+_IMAP_SENT_FLAG_RE = re.compile(r"(?i)(?:^|\s)\\Sent(?:\s|$)")
+
+
+def _decode_imap_text(value: object) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _unquote_imap_mailbox(token: str) -> str:
+    token = token.strip()
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        inner = token[1:-1]
+        return inner.replace(r"\\", "\\").replace(r"\"", '"')
+    return token
+
+
+def parse_imap_list_item(raw: object) -> tuple[str, str] | None:
+    """Return (flags, mailbox name) from one IMAP LIST response line."""
+    text = _decode_imap_text(raw).strip()
+    if not text:
+        return None
+    match = _IMAP_LIST_RE.match(text)
+    if not match:
+        return None
+    return match.group(1), _unquote_imap_mailbox(match.group(2))
+
+
+def list_imap_mailboxes(client: imaplib.IMAP4) -> list[tuple[str, str]]:
+    status, data = client.list()
+    if status != "OK":
+        raise RuntimeError("IMAP LIST failed")
+    mailboxes: list[tuple[str, str]] = []
+    for item in data or []:
+        if item is None:
+            continue
+        parsed = parse_imap_list_item(item)
+        if parsed:
+            mailboxes.append(parsed)
+    return mailboxes
+
+
+def resolve_sent_mailbox(client: imaplib.IMAP4, owned: dict) -> str:
+    """Pick the mailbox that should hold a copy of outbound mail.
+
+    An explicit imap.sent_mailbox wins. Otherwise prefer a SPECIAL-USE \\Sent
+    mailbox, then well-known names that actually appear in LIST.
+    """
+    imap_settings = owned.get("imap") if isinstance(owned.get("imap"), dict) else {}
+    override = imap_settings.get("sent_mailbox") if isinstance(imap_settings, dict) else None
+    if isinstance(override, str) and override.strip():
+        return override.strip()
+
+    mailboxes = list_imap_mailboxes(client)
+    for flags, name in mailboxes:
+        if _IMAP_SENT_FLAG_RE.search(flags):
+            return name
+
+    by_lower: dict[str, str] = {}
+    for _, name in mailboxes:
+        by_lower.setdefault(name.lower(), name)
+    for candidate in _SENT_MAILBOX_CANDIDATES:
+        found = by_lower.get(candidate.lower())
+        if found:
+            return found
+
+    raise RuntimeError(
+        "could not find a Sent mailbox; set imap.sent_mailbox on the owned address"
+    )
+
+
+def imap_append_sent(owned: dict, message: Message) -> str:
+    """APPEND a sent message to the account Sent mailbox. Returns the mailbox name."""
+    client = imap_connect(owned)
+    try:
+        mailbox = resolve_sent_mailbox(client, owned)
+        status, _ = client.append(mailbox, "(\\Seen)", None, message.as_bytes())
+        if status != "OK":
+            raise RuntimeError(f"IMAP APPEND to {mailbox!r} failed")
+        return mailbox
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+
 def mark_imap_read(owned: dict, *, uids: list[str], mailbox: str = "INBOX") -> list[str]:
     if not uids:
         return []
