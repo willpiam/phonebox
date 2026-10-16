@@ -160,5 +160,6 @@ Sent mail:
 
 - After SMTP accepts a message, phonebox APPENDs the same copy to the account's IMAP Sent mailbox (flagged `\Seen`) so other clients can see it.
 - The mailbox is the one with the SPECIAL-USE `\Sent` attribute, otherwise the first match among `Sent`, `INBOX.Sent`, `Sent Items`, `Sent Messages`, and `[Gmail]/Sent Mail`.
-- Set `imap.sent_mailbox` to a mailbox name when auto-detection does not match the server.
-- If APPEND fails after SMTP has already delivered, the send returns an error and the message is not written to local sent history.
+- If none of those exist, phonebox creates one: `INBOX.Sent` when the server's hierarchy delimiter is `.`, otherwise `Sent`.
+- Set `imap.sent_mailbox` to a mailbox name when auto-detection does not match the server. If that mailbox is missing, phonebox creates it.
+- A send is successful once SMTP accepts it. The local sent record is always written. If the Sent copy fails, the record includes `sent_copy_error` and the message must not be sent again.

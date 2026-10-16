@@ -925,7 +925,7 @@ _SENT_MAILBOX_CANDIDATES = (
 
 _IMAP_LIST_RE = re.compile(
     r'^\(([^)]*)\)\s+'
-    r'(?:"(?:\\.|[^"\\])*"|NIL|\S+)\s+'
+    r'("(?:\\.|[^"\\])*"|NIL|\S+)\s+'
     r'("(?:\\.|[^"\\])*"|\{.*\}|\S+)\s*$'
 )
 _IMAP_SENT_FLAG_RE = re.compile(r"(?i)(?:^|\s)\\Sent(?:\s|$)")
@@ -945,22 +945,26 @@ def _unquote_imap_mailbox(token: str) -> str:
     return token
 
 
-def parse_imap_list_item(raw: object) -> tuple[str, str] | None:
-    """Return (flags, mailbox name) from one IMAP LIST response line."""
+def parse_imap_list_item(raw: object) -> tuple[str, str, str] | None:
+    """Return (flags, hierarchy delimiter, mailbox name) from one IMAP LIST line."""
     text = _decode_imap_text(raw).strip()
     if not text:
         return None
     match = _IMAP_LIST_RE.match(text)
     if not match:
         return None
-    return match.group(1), _unquote_imap_mailbox(match.group(2))
+    return (
+        match.group(1),
+        _unquote_imap_mailbox(match.group(2)),
+        _unquote_imap_mailbox(match.group(3)),
+    )
 
 
-def list_imap_mailboxes(client: imaplib.IMAP4) -> list[tuple[str, str]]:
+def list_imap_mailboxes(client: imaplib.IMAP4) -> list[tuple[str, str, str]]:
     status, data = client.list()
     if status != "OK":
         raise RuntimeError("IMAP LIST failed")
-    mailboxes: list[tuple[str, str]] = []
+    mailboxes: list[tuple[str, str, str]] = []
     for item in data or []:
         if item is None:
             continue
@@ -970,43 +974,106 @@ def list_imap_mailboxes(client: imaplib.IMAP4) -> list[tuple[str, str]]:
     return mailboxes
 
 
-def resolve_sent_mailbox(client: imaplib.IMAP4, owned: dict) -> str:
-    """Pick the mailbox that should hold a copy of outbound mail.
+def _imap_response_text(data: object) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data).decode("utf-8", errors="replace")
+    if isinstance(data, (list, tuple)):
+        return " ".join(_imap_response_text(item) for item in data)
+    return str(data)
+
+
+def _append_needs_create(status: str, data: object) -> bool:
+    if status == "OK":
+        return False
+    return "TRYCREATE" in _imap_response_text(data).upper()
+
+
+def default_sent_mailbox_name(mailboxes: list[tuple[str, str, str]]) -> str:
+    """Name to CREATE when the account has no Sent mailbox.
+
+    Dot-delimited hosts (INBOX.Trash, INBOX.Drafts) keep folders under INBOX.
+    """
+    delimiter = ""
+    for _, delim, name in mailboxes:
+        if name.upper() == "INBOX" and delim and delim.upper() != "NIL":
+            delimiter = delim
+            break
+    if not delimiter:
+        for _, delim, _name in mailboxes:
+            if delim and delim.upper() != "NIL":
+                delimiter = delim
+                break
+    if delimiter == ".":
+        return "INBOX.Sent"
+    return "Sent"
+
+
+def resolve_sent_mailbox(client: imaplib.IMAP4, owned: dict) -> tuple[str, bool]:
+    """Return (mailbox name, create_first).
 
     An explicit imap.sent_mailbox wins. Otherwise prefer a SPECIAL-USE \\Sent
-    mailbox, then well-known names that actually appear in LIST.
+    mailbox, then well-known names that actually appear in LIST. If none match,
+    create_first is true and the name is Sent or INBOX.Sent.
     """
     imap_settings = owned.get("imap") if isinstance(owned.get("imap"), dict) else {}
     override = imap_settings.get("sent_mailbox") if isinstance(imap_settings, dict) else None
     if isinstance(override, str) and override.strip():
-        return override.strip()
+        return override.strip(), False
 
     mailboxes = list_imap_mailboxes(client)
-    for flags, name in mailboxes:
+    for flags, _delim, name in mailboxes:
         if _IMAP_SENT_FLAG_RE.search(flags):
-            return name
+            return name, False
 
     by_lower: dict[str, str] = {}
-    for _, name in mailboxes:
+    for _, _delim, name in mailboxes:
         by_lower.setdefault(name.lower(), name)
     for candidate in _SENT_MAILBOX_CANDIDATES:
         found = by_lower.get(candidate.lower())
         if found:
-            return found
+            return found, False
 
-    raise RuntimeError(
-        "could not find a Sent mailbox; set imap.sent_mailbox on the owned address"
-    )
+    return default_sent_mailbox_name(mailboxes), True
+
+
+def _imap_create_mailbox(client: imaplib.IMAP4, mailbox: str) -> None:
+    status, data = client.create(mailbox)
+    if status != "OK":
+        detail = _imap_response_text(data).strip()
+        message = f"IMAP CREATE {mailbox!r} failed"
+        if detail:
+            message = f"{message}: {detail}"
+        raise RuntimeError(message)
+    try:
+        client.subscribe(mailbox)
+    except Exception:
+        pass
 
 
 def imap_append_sent(owned: dict, message: Message) -> str:
-    """APPEND a sent message to the account Sent mailbox. Returns the mailbox name."""
+    """APPEND a sent message to the account Sent mailbox. Returns the mailbox name.
+
+    Creates the mailbox first when none exists. If APPEND reports TRYCREATE,
+    creates that name and appends once more.
+    """
     client = imap_connect(owned)
     try:
-        mailbox = resolve_sent_mailbox(client, owned)
-        status, _ = client.append(mailbox, "(\\Seen)", None, message.as_bytes())
+        mailbox, create_first = resolve_sent_mailbox(client, owned)
+        if create_first:
+            _imap_create_mailbox(client, mailbox)
+        payload = message.as_bytes()
+        status, data = client.append(mailbox, "(\\Seen)", None, payload)
+        if status != "OK" and not create_first and _append_needs_create(status, data):
+            _imap_create_mailbox(client, mailbox)
+            status, data = client.append(mailbox, "(\\Seen)", None, payload)
         if status != "OK":
-            raise RuntimeError(f"IMAP APPEND to {mailbox!r} failed")
+            detail = _imap_response_text(data).strip()
+            message = f"IMAP APPEND to {mailbox!r} failed"
+            if detail:
+                message = f"{message}: {detail}"
+            raise RuntimeError(message)
         return mailbox
     finally:
         try:

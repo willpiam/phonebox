@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 import urllib.parse
@@ -387,9 +388,15 @@ def send_email(payload: dict) -> dict:
     owned = common.resolve_owned_email(common.load_owned_emails(), from_value)
     message, recipients, meta = common.build_outbound_email(owned, payload)
     common.send_smtp_message(owned, message, recipients)
-    # SMTP has already delivered. If APPEND fails, raise before local history
-    # so the caller sees that Sent sync did not succeed.
-    mailbox = common.imap_append_sent(owned, message)
+    # SMTP has already delivered. A Sent-copy failure must not look like a
+    # failed send, or a caller will deliver the message again.
+    sent_copy_error = None
+    mailbox = None
+    try:
+        mailbox = common.imap_append_sent(owned, message)
+    except Exception as error:
+        sent_copy_error = str(error)
+        print(f"sent copy failed: {sent_copy_error}", file=sys.stderr)
     now = datetime.now().astimezone()
     record = {
         "kind": "email",
@@ -405,10 +412,13 @@ def send_email(payload: dict) -> dict:
         "provider": "smtp",
         "provider_sid": meta["message_id"],
         "message_id": meta["message_id"],
-        "mailbox": mailbox,
         "created_at_unix": int(time.time()),
         "created_at_iso": now.isoformat(),
     }
+    if mailbox:
+        record["mailbox"] = mailbox
+    if sent_copy_error:
+        record["sent_copy_error"] = sent_copy_error
     append_sent_email(record)
     return record
 

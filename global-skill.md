@@ -104,6 +104,7 @@ python3 PHONEBOX_ROOT/cli.py email read --address 'you@example.com' --message-id
 - `received email` polls IMAP first. Messages are oldest-first. Plain text is `body`. Large HTML is omitted; `has_html` is true when HTML was dropped. If there is little plain text, `html` is included.
 - `--unread` returns messages that do not yet have IMAP `\Seen`. After you handle a message, mark it read so another agent does not process it again.
 - `email read` accepts repeatable `--message-id`, `--uid`, or `--provider-sid`. At least one id is required. Optional `--mailbox` (default `INBOX`).
+- Exit 0 means SMTP delivered the message. Do not send it again. A missing Sent folder is created automatically. If the JSON includes `sent_copy_error`, the copy into Sent failed; tell the user and do not retry the send.
 
 ## Contacts
 

@@ -268,8 +268,9 @@ Rules:
 - "from" must be an owned email address from /addresses.
 - "to" is required (string or array of email addresses). Pass real addresses, not contact names. Look up a contact's email via GET /contacts first if needed. "cc", "bcc", and "attachments" are optional.
 - "subject" is required. "body"/"content" is the plain-text body (may be empty string).
-- Success is HTTP 201 with the stored sent email record (message_id / provider_sid, mailbox, created_at_unix). The same message is APPENDed to the account's IMAP Sent mailbox so other devices can see it.
-- Failures are JSON {{"error": "..."}} with 400 for bad input or 500 if SMTP rejects the send or IMAP APPEND to Sent fails. APPEND runs after SMTP, so a Sent-sync error can mean the message was already delivered.
+- Success is HTTP 201 with the stored sent email record (message_id / provider_sid, mailbox, created_at_unix). The same message is APPENDed to the account's IMAP Sent mailbox so other devices can see it. If that mailbox does not exist, phonebox creates `INBOX.Sent` (hierarchy delimiter `.`) or `Sent`.
+- A record with `sent_copy_error` still means SMTP delivered the message. Do not send it again. The Sent copy failed and the error text is in that field.
+- Failures are JSON {{"error": "..."}} with 400 for bad input or 500 if SMTP rejects the send.
 
 Read inbound SMS
 GET {base}/received/<phone>
