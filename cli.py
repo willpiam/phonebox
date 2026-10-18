@@ -54,6 +54,14 @@ def cmd_openai(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_speak(args: argparse.Namespace) -> int:
+    payload: dict = {"text": args.text}
+    if args.voice:
+        payload["voice"] = args.voice
+    _print_json(actions.speak(payload))
+    return 0
+
+
 def cmd_contact_add(args: argparse.Namespace) -> int:
     payload: dict = {"name": args.name}
     if args.phone:
@@ -211,7 +219,7 @@ def cmd_call_hangup(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cli.py",
-        description="phonebox CLI — SMS, email, and outbound AI calls without a REST server",
+        description="phonebox CLI — SMS, email, local speech, and outbound AI calls without a REST server",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -229,6 +237,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_openai = sub.add_parser("openai", help="Whether an OpenAI API key is configured")
     p_openai.set_defaults(func=cmd_openai)
+
+    p_speak = sub.add_parser(
+        "speak",
+        help="Speak text aloud on this machine's speakers (OpenAI TTS)",
+    )
+    p_speak.add_argument("--text", required=True, help="Text to speak")
+    p_speak.add_argument(
+        "--voice",
+        help="OpenAI TTS voice (default alloy)",
+    )
+    p_speak.set_defaults(func=cmd_speak)
 
     p_contact = sub.add_parser("contact", help="Contact commands")
     contact_sub = p_contact.add_subparsers(dest="contact_command", required=True)

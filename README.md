@@ -7,6 +7,7 @@ A local tool that lets agents on this machine:
 - make phone calls
 - send and receive SMS
 - send and receive email
+- speak text aloud on this machine's speakers
 
 ## Use phonebox from any repository
 
@@ -33,9 +34,10 @@ python3 cli.py send text --from '+1XXXXXXXXXX' --to '+1YYYYYYYYYY' --body 'hello
 python3 cli.py received sms +1XXXXXXXXXX
 python3 cli.py call --from '+1XXXXXXXXXX' --to '+1YYYYYYYYYY' \
   --background 'Confirm appointment' --question 'Are they available Friday?'
+python3 cli.py speak --text 'The build finished.'
 ```
 
-Commands print JSON on stdout (errors on stderr). Outbound calls **block** until the call finishes, then print the final record (status, transcript, answers). Ctrl+C hangs up.
+Commands print JSON on stdout (errors on stderr). Outbound calls **block** until the call finishes, then print the final record (status, transcript, answers). Ctrl+C hangs up. `speak` **blocks** until the audio finishes playing on this machine.
 
 | Command | Purpose |
 |---------|---------|
@@ -49,6 +51,7 @@ Commands print JSON on stdout (errors on stderr). Outbound calls **block** until
 | `email read --address … --message-id …` | Mark email(s) read |
 | `call --from … --to … [--background …] [--question …] [--file …]` | Place call (blocking) |
 | `call status <id>` / `call hangup <id>` / `calls` | Inspect or end calls |
+| `speak --text … [--voice …]` | Speak text on this machine (blocking) |
 
 ## REST server
 
@@ -66,6 +69,7 @@ Main routes:
 - `GET /gui` — minimal HTML UI to edit owned phones, emails, contacts, and OpenAI key
 - `POST /send/text` — SMS
 - `POST /send/email` — email
+- `POST /speak` — speak text on this machine's speakers (blocks until playback ends)
 - `POST /call` — outbound AI phone call (async)
 - `GET /call/<id>` — call status / transcript / answers
 - `GET /calls` — recent calls
@@ -87,11 +91,32 @@ Via CLI, `python3 cli.py call …` blocks until the call completes. Via REST, `P
 
 AI-initiated calls may be regulated (for example TCPA in the US). Only call numbers you are allowed to contact.
 
+## Local speak
+
+`speak` turns text into speech with OpenAI TTS and plays it on this machine's speakers. It is not a phone call.
+
+It uses the same gitignored `openai.json` API key as outbound calls. Confirm the key with `python3 cli.py openai` (`"configured": true`).
+
+A local player must be on `PATH`. Phonebox uses the first one it finds:
+
+- `paplay` (package `pulseaudio-utils`)
+- `ffplay` (package `ffmpeg`)
+- `mpv`
+
+```bash
+python3 cli.py speak --text 'The build finished.'
+python3 cli.py speak --text 'The build finished.' --voice nova
+```
+
+The command blocks until playback ends, then prints `{"ok": true, "voice": "...", "model": "tts-1", "chars": N}`. `--text` is required (at most 4096 characters). `--voice` defaults to `alloy`. Allowed voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`.
+
+REST: `POST /speak` with `{"text":"...","voice":"alloy"}` does the same thing and also blocks until playback ends.
+
 ### OpenAI API key
 
 1. Create an account at [platform.openai.com](https://platform.openai.com/).
 2. Open [API keys](https://platform.openai.com/api-keys) and create a secret key.
-3. Ensure the project has billing enabled and access to the Realtime API (used for live calls).
+3. Ensure the project has billing enabled and access to the Realtime API (used for live calls) and the speech API (used by `speak`).
 4. Paste the key at [http://127.0.0.1:8765/gui/openai](http://127.0.0.1:8765/gui/openai) (start `python3 server.py` first), or write gitignored `openai.json` with `{"api_key":"sk-..."}`.
 
 ### Twilio phone number

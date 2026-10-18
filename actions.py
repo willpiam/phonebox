@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 from datetime import datetime
+from pathlib import Path
 
 import common
 import gui
@@ -557,6 +561,68 @@ def openai_status() -> dict:
     return {
         "configured": common.openai_configured(),
         "realtime_model": common.openai_realtime_model(),
+    }
+
+
+_AUDIO_PLAYERS: tuple[tuple[str, list[str]], ...] = (
+    ("paplay", ["paplay"]),
+    ("ffplay", ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"]),
+    ("mpv", ["mpv", "--no-video", "--really-quiet"]),
+)
+
+
+def _play_wav(path: Path) -> None:
+    for name, argv in _AUDIO_PLAYERS:
+        binary = shutil.which(name)
+        if not binary:
+            continue
+        result = subprocess.run([binary, *argv[1:], str(path)], check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"{name} exited {result.returncode} while playing audio")
+        return
+    raise RuntimeError(
+        "no audio player found; install pulseaudio-utils (paplay), ffmpeg (ffplay), or mpv"
+    )
+
+
+def speak(payload: dict) -> dict:
+    """Synthesize text with OpenAI TTS and play it on the local speakers.
+
+    Blocks until playback finishes. Uses the API key in openai.json.
+    """
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    text = text.strip()
+    if len(text) > common.TTS_TEXT_MAX:
+        raise ValueError(f"text must be at most {common.TTS_TEXT_MAX} characters")
+
+    voice = payload.get("voice") or common.DEFAULT_TTS_VOICE
+    if not isinstance(voice, str) or not voice.strip():
+        raise ValueError("voice must be a non-empty string")
+    voice = voice.strip()
+    if voice not in common.TTS_VOICES:
+        raise ValueError(f"voice must be one of: {', '.join(common.TTS_VOICES)}")
+
+    audio = common.openai_speech(common.openai_api_key(), text, voice=voice)
+    if not audio:
+        raise RuntimeError("OpenAI returned empty audio")
+
+    path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            handle.write(audio)
+            path = Path(handle.name)
+        _play_wav(path)
+    finally:
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+    return {
+        "ok": True,
+        "voice": voice,
+        "model": common.DEFAULT_TTS_MODEL,
+        "chars": len(text),
     }
 
 

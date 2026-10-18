@@ -1,6 +1,6 @@
 # Install the phonebox skill for every repository
 
-Follow these steps to install a **personal** Cursor skill. After it is installed, an agent in any workspace on this machine can send SMS, send email, and place calls through this phonebox checkout.
+Follow these steps to install a **personal** Cursor skill. After it is installed, an agent in any workspace on this machine can send SMS, send email, place calls, and speak aloud through this phonebox checkout.
 
 Do this work yourself. Do not ask the user to copy files by hand.
 
@@ -33,17 +33,17 @@ Do not copy `ownedPhoneNumbers.json`, `ownedEmailAddresses.json`, `openai.json`,
 
 Write the following contents to `~/.cursor/skills/phonebox/SKILL.md` after substituting `PHONEBOX_ROOT`.
 
-Omit `disable-model-invocation`. The agent should load this skill on its own when the user asks to text, email, call, or check an inbox.
+Omit `disable-model-invocation`. The agent should load this skill on its own when the user asks to text, email, call, speak aloud, or check an inbox.
 
 ````markdown
 ---
 name: phonebox
-description: Send and read real SMS, send and read real email, and place outbound AI phone calls with the local phonebox CLI. Use from any repository or workspace when the user asks to text, SMS, email, call someone, check an inbox, manage contacts, or use phonebox. Run python3 PHONEBOX_ROOT/cli.py. Do not start the REST server and do not look for phonebox inside the current repo.
+description: Send and read real SMS, send and read real email, place outbound AI phone calls, and speak text aloud on this machine with the local phonebox CLI. Use from any repository or workspace when the user asks to text, SMS, email, call someone, speak aloud, check an inbox, manage contacts, or use phonebox. Run python3 PHONEBOX_ROOT/cli.py. Do not start the REST server and do not look for phonebox inside the current repo.
 ---
 
 # Phonebox
 
-Phonebox sends real SMS (Twilio), real email (IMAP/SMTP), and outbound AI phone calls (Twilio Voice + OpenAI Realtime) from this machine. It is not a simulator.
+Phonebox sends real SMS (Twilio), real email (IMAP/SMTP), and outbound AI phone calls (Twilio Voice + OpenAI Realtime) from this machine, and can speak text aloud on this machine's speakers (OpenAI TTS). It is not a simulator.
 
 Use the CLI only. Do not start `server.py` and do not call `http://127.0.0.1:8765`. The server is a separate always-on process and is often not running. Every CLI command is one-shot and exits when finished.
 
@@ -73,7 +73,7 @@ python3 PHONEBOX_ROOT/cli.py openai
 - `numbers` — owned Twilio numbers. Use one as `--from` for SMS and calls, and as the phone argument when reading SMS.
 - `addresses` — owned mailboxes. Use one as `--from` for email, and as the address argument when reading email.
 - `contacts` — saved people (`name`, optional `phone` / `e164`, optional `email`, optional `notes`). Send to the phone or email, never the contact name.
-- `openai` — `{"configured": true/false, "realtime_model": "..."}`. Required before placing a call. Never returns the key.
+- `openai` — `{"configured": true/false, "realtime_model": "..."}`. Required before placing a call or speaking. Never returns the key.
 
 Phone numbers accept `(236) 243-8512`, `2362438512`, or `+12362438512`. Prefer E.164 (`+1...`) in commands.
 
@@ -143,6 +143,23 @@ python3 PHONEBOX_ROOT/cli.py call hangup CALL_ID
 
 Statuses: `queued` → `tunneling` → `dialing` → `in_progress` → `completed` | `failed` | `canceled`. On completion, `answers` maps each `--question` to an extracted answer.
 
+## Speak
+
+Speak text aloud on this machine's speakers. It is not a phone call.
+
+Before the first speak in a session, confirm `python3 PHONEBOX_ROOT/cli.py openai` shows `"configured": true`. Speak uses the same key as calls (`PHONEBOX_ROOT/openai.json`). If the key is missing, tell the user to write `{"api_key":"sk-..."}` into that file. Do not read `openai.json` and do not start the REST server to collect the key.
+
+A local player must be on `PATH`. Phonebox uses the first one it finds: `paplay`, `ffplay`, or `mpv`.
+
+```bash
+python3 PHONEBOX_ROOT/cli.py speak --text 'The build finished.'
+python3 PHONEBOX_ROOT/cli.py speak --text 'The build finished.' --voice nova
+```
+
+The command blocks until playback finishes, then prints `{"ok": true, "voice": "...", "model": "tts-1", "chars": N}`. `--text` is required and at most 4096 characters. `--voice` defaults to `alloy`. Allowed voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`.
+
+Exit 0 means the audio finished playing.
+
 ## Workflows
 
 SMS:
@@ -165,6 +182,12 @@ Call:
 2. `call` with `--background` and any `--question` flags. Block until it exits.
 3. Read `answers` and `transcript` from the JSON.
 
+Speak:
+
+1. `openai` (`configured` must be true).
+2. `speak --text '…'`. Block until it exits.
+3. Read `ok` from the JSON.
+
 ## Constraints
 
 - These are real messages and real calls. Do not spam. Confirm the recipient with the user before contacting someone new.
@@ -179,4 +202,4 @@ Call:
 1. Open `~/.cursor/skills/phonebox/SKILL.md` and confirm every former `PHONEBOX_ROOT` is the absolute path of this checkout.
 2. Confirm `cli.py` exists at that path.
 3. Run `python3 PHONEBOX_ROOT/cli.py explain`. It should print JSON and exit 0. If imports fail, run `pip install -r PHONEBOX_ROOT/requirements.txt` and retry.
-4. Tell the user the skill is installed and that agents in other repositories can text, email, and call through this checkout. New chats pick the skill up from its description; a chat that was already open may need to be started again.
+4. Tell the user the skill is installed and that agents in other repositories can text, email, call, and speak through this checkout. New chats pick the skill up from its description; a chat that was already open may need to be started again.

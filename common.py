@@ -63,6 +63,22 @@ REALTIME_VOICES = [
     "marin",
     "cedar",
 ]
+# OpenAI speech API voices (POST /v1/audio/speech).
+TTS_VOICES = [
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "fable",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+]
+DEFAULT_TTS_MODEL = "tts-1"
+DEFAULT_TTS_VOICE = "alloy"
+TTS_TEXT_MAX = 4096
 # Used when no API key is set yet, or Models API is unreachable.
 FALLBACK_REALTIME_MODELS = [
     "gpt-realtime",
@@ -469,6 +485,40 @@ def openai_chat_completions(api_key: str, payload: dict, timeout: float = 60) ->
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI HTTP {error.code}: {detail}") from error
+
+
+def openai_speech(
+    api_key: str,
+    text: str,
+    *,
+    voice: str = DEFAULT_TTS_VOICE,
+    model: str = DEFAULT_TTS_MODEL,
+    response_format: str = "wav",
+    timeout: float = 120,
+) -> bytes:
+    """Synthesize speech with OpenAI TTS. Returns raw audio bytes."""
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": response_format,
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/audio/speech",
+        data=raw,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"OpenAI HTTP {error.code}: {detail}") from error

@@ -12,6 +12,7 @@ POST /contact/add               Add a contact. JSON: {"name", "phone"?, "email"?
 POST /send/text                 Send SMS. JSON: {"from", "to", "body"}
 POST /send/email                Send email. JSON: {"from", "to", "subject", "body", ...}
 POST /email/read                Mark email(s) read on IMAP. JSON: {"address", ...}
+POST /speak                     Speak text on this machine's speakers (OpenAI TTS, blocking)
 POST /call                      Place outbound AI phone call (async). Returns call id.
 GET  /call/<id>                 Call status, transcript, and answers
 GET  /calls                     Recent outbound calls
@@ -136,10 +137,10 @@ def explain_text(host: str, port: int) -> str:
     return f"""You have a local messaging tool called phonebox.
 
 What it is
-Phonebox lets programs and AIs on this machine send and read real SMS (Twilio) and real email (IMAP/SMTP), and place outbound AI phone calls (Twilio Voice + OpenAI Realtime). It is not a simulator.
+Phonebox lets programs and AIs on this machine send and read real SMS (Twilio) and real email (IMAP/SMTP), place outbound AI phone calls (Twilio Voice + OpenAI Realtime), and speak text aloud on this machine's speakers (OpenAI TTS). It is not a simulator.
 
 Two interfaces (same actions)
-1. CLI (preferred when you do not need a long-running process): run commands via python3 cli.py … — each command exits when done. Outbound calls block until the call finishes, then print the final JSON record. No always-on server required for SMS, email, or a single outbound call.
+1. CLI (preferred when you do not need a long-running process): run commands via python3 cli.py … — each command exits when done. Outbound calls block until the call finishes, then print the final JSON record. `speak` blocks until the audio finishes playing. No always-on server required for SMS, email, local speech, or a single outbound call.
 2. REST API (this server): HTTP on localhost. Needed for the HTML config UI (/gui) and continuous background inbox polling. POST /call is async; poll GET /call/<id>.
 
 CLI working directory (run commands from here)
@@ -152,6 +153,7 @@ python3 cli.py numbers
 python3 cli.py send text --from '{example_from}' --to '+15195551212' --body 'hello'
 python3 cli.py received sms {example_from}
 python3 cli.py call --from '{example_from}' --to '+15195551212' --background 'Confirm appointment' --question 'Are they available Friday?'
+python3 cli.py speak --text 'The build finished.'
 
 REST base URL
 {base}
@@ -175,10 +177,10 @@ Use one of these as "from" when sending email, and as <address> when reading an 
 
 {address_block}
 
-OpenAI (required for phone calls)
+OpenAI (required for phone calls and local speech)
 GET {base}/openai
 CLI: python3 cli.py openai
-Returns {{"configured": true/false, "realtime_model": "..."}}. Never returns the API key. Configure the key at GET {base}/gui/openai (writes gitignored openai.json).
+Returns {{"configured": true/false, "realtime_model": "..."}}. Never returns the API key. Configure the key at GET {base}/gui/openai (writes gitignored openai.json). The same key is used for Realtime calls and for speak.
 
 Contacts
 GET {base}/contacts
@@ -248,6 +250,25 @@ Rules:
 - GET {base}/calls or python3 cli.py calls lists recent calls (newest first).
 - Requires: OpenAI key configured, cloudflared on PATH, Voice enabled on the Twilio number.
 - phonebox starts a Cloudflare Quick Tunnel for the call media WebSocket; you do not host a public server.
+
+Speak on this machine
+POST {base}/speak
+CLI: python3 cli.py speak --text 'The build finished.'
+CLI: python3 cli.py speak --text 'The build finished.' --voice nova
+Content-Type: application/json
+
+{{
+  "text": "The build finished.",
+  "voice": "alloy"
+}}
+
+Synthesizes speech with OpenAI TTS and plays it on this machine's speakers. It is not a phone call.
+
+Rules:
+- "text" is required, non-empty, and at most 4096 characters. "voice" is optional (default alloy). Allowed voices: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer.
+- Requires the same OpenAI API key as phone calls (cli.py openai must show configured=true). Do not read openai.json.
+- Needs a local player on PATH: paplay (pulseaudio-utils), ffplay (ffmpeg), or mpv. The first one found is used.
+- Both CLI and REST block until playback finishes, then return {{"ok": true, "voice": "...", "model": "tts-1", "chars": N}}. No audio bytes are returned.
 
 Send email
 POST {base}/send/email
@@ -368,6 +389,11 @@ Typical AI workflow (phone call)
 3. python3 cli.py call --from … --to … --background … --question … (blocks until done), or POST /call then poll GET /call/<id>.
 4. Read answers and transcript from the final record.
 
+Typical AI workflow (speak)
+1. python3 cli.py openai and confirm configured=true (else tell the human to open /gui/openai).
+2. python3 cli.py speak --text '…'. Blocks until playback finishes.
+3. Read the JSON result (ok, voice, model, chars). Exit 0 means playback finished.
+
 Examples (curl / REST)
 curl -s {base}/numbers
 curl -s {base}/addresses
@@ -379,6 +405,8 @@ curl -s -X POST {base}/send/text -H 'Content-Type: application/json' \\
   -d '{{"from":"{example_from}","to":"+15195551212","body":"hello"}}'
 curl -s -X POST {base}/send/email -H 'Content-Type: application/json' \\
   -d '{{"from":"{example_email}","to":["recipient@example.com"],"subject":"hello","body":"hi"}}'
+curl -s -X POST {base}/speak -H 'Content-Type: application/json' \\
+  -d '{{"text":"The build finished.","voice":"alloy"}}'
 curl -s -X POST {base}/call -H 'Content-Type: application/json' \\
   -d '{{"from":"{example_from}","to":"+15195551212","context":{{"background":"Confirm appointment"}},"questions":["Are they available Friday?"]}}'
 curl -s {base}/call/CALL_ID
@@ -391,7 +419,7 @@ curl -s -X POST {base}/email/read -H 'Content-Type: application/json' \\
 Constraints
 - Only send SMS or place calls from numbers returned by /numbers or cli.py numbers.
 - Only send email from addresses returned by /addresses or cli.py addresses.
-- This sends real SMS, email, and phone calls. Do not spam. Confirm recipients before contacting them. AI phone calls may be regulated (e.g. TCPA); obtain consent where required.
+- This sends real SMS, email, and phone calls, and can speak aloud on this machine. Do not spam. Confirm recipients before contacting them. AI phone calls may be regulated (e.g. TCPA); obtain consent where required.
 - Phone numbers in URLs may include +. Prefer the E.164 form (+1...) or digits-only.
 - After handling an email, mark it read so other agents skip it.
 """
@@ -490,6 +518,12 @@ def api_index() -> dict:
                 "method": "GET",
                 "path": "/received/email/<address>/since/<time>",
                 "description": "Inbound email after a cutoff; optional ?unread=1",
+            },
+            {
+                "method": "POST",
+                "path": "/speak",
+                "description": "Speak text on this machine's speakers (OpenAI TTS; blocks until playback ends)",
+                "body": {"text": "words to say", "voice": "optional TTS voice (default alloy)"},
             },
             {
                 "method": "POST",
@@ -718,6 +752,13 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 record = actions.send_email(payload)
                 self._json(201, record)
+                return
+            if path == "/speak":
+                payload = self._read_json_object()
+                if payload is None:
+                    return
+                result = actions.speak(payload)
+                self._json(200, result)
                 return
             if path == "/call":
                 payload = self._read_json_object()
